@@ -2,22 +2,24 @@
 
 package chisel3.tester
 
-import scala.collection.mutable
-import scala.util.DynamicVariable
+import java.io.File
 
+import chisel3.experimental.MultiIOModule
+import firrtl.AnnotationSeq
+import firrtl.options.TargetDirAnnotation
 import org.scalatest._
 import org.scalatest.exceptions.TestFailedException
+import treadle.stage.WriteVcd
 
-import firrtl.ExecutionOptionsManager
-import chisel3._
-import chisel3.experimental.MultiIOModule
+import scala.collection.mutable
+import scala.util.DynamicVariable
 
 trait ChiselScalatestTester extends Assertions with TestSuiteMixin with TestEnvInterface { this: TestSuite =>
   // Provide test fixture data as part of 'global' context during test runs
   protected var scalaTestContext = new DynamicVariable[Option[NoArgTest]](None)
 
   abstract override def withFixture(test: NoArgTest): Outcome = {
-    require(scalaTestContext.value == None)
+    require(scalaTestContext.value.isEmpty)
     scalaTestContext.withValue(Some(test)) {
       super.withFixture(test)
     }
@@ -53,7 +55,7 @@ trait ChiselScalatestTester extends Assertions with TestSuiteMixin with TestEnvI
         val lineNumbers = traceThrowable.getStackTrace.drop(expectStackDepth + 2).collect {
           case ste if ste.getFileName == fileName => ste.getLineNumber
         }.mkString(", ")
-        if (lineNumbers.isEmpty()) {
+        if (lineNumbers.isEmpty) {
           ""
         } else {
           s" (lines in $fileName: $lineNumbers)"
@@ -75,7 +77,7 @@ trait ChiselScalatestTester extends Assertions with TestSuiteMixin with TestEnvI
   private def runTest[T <: MultiIOModule](tester: BackendInstance[T])(testFn: T => Unit) {
     // Try and get the user's top-level test filename
     val internalFiles = Set("ChiselScalatestTester.scala", "BackendInterface.scala")
-    val topFileNameGuess = (new Throwable).getStackTrace.apply(3).getFileName()
+    val topFileNameGuess = (new Throwable).getStackTrace.apply(3).getFileName
     if (internalFiles.contains(topFileNameGuess)) {
       println("Unable to guess top-level testdriver filename from stack trace")
       topFileName = None
@@ -88,17 +90,41 @@ trait ChiselScalatestTester extends Assertions with TestSuiteMixin with TestEnvI
     Context.run(tester, this, testFn)
   }
 
-  def getTestOptions(): TesterOptions = {
-    val test = scalaTestContext.value.get
-    TesterOptions(test.name, test.configMap.contains("writeVcd"))
+  def getTestAnnotations(annotationSeq: AnnotationSeq): AnnotationSeq = {
+    val scalaTestHandle = scalaTestContext.value.get
+
+    annotationSeq ++
+            (
+                    if(annotationSeq.exists(_.isInstanceOf[TargetDirAnnotation])) {
+                      Seq.empty
+                    }
+                    else {
+                      val sanitizedName = "test_run_dir" +
+                              File.separator +
+                              scalaTestHandle.name.replaceAll(" ", "_").replaceAll("\\W+", "")
+                      Seq(TargetDirAnnotation(sanitizedName))
+                    }
+            ) ++
+            (
+                    if(scalaTestHandle.configMap.contains("writeVcd")) {
+                      Seq(WriteVcd)
+                    }
+                    else {
+                      Seq.empty
+                    }
+            )
   }
 
   // This should be the only user-called function
   def test[T <: MultiIOModule](dutGen: => T)(testFn: T => Unit) {
-    runTest(Context.createDefaultTester(() => dutGen, getTestOptions(), None))(testFn)
+    val annotations = getTestAnnotations(Seq.empty)
+    val defaultTester = Context.createDefaultTester(() => dutGen, annotations)
+
+    runTest(defaultTester)(testFn)
   }
 
-  def test[T <: MultiIOModule](dutGen: => T, execOptions: ExecutionOptionsManager)(testFn: T => Unit) {
-    runTest(Context.createDefaultTester(() => dutGen, getTestOptions(), Some(execOptions)))(testFn)
+  def test[T <: MultiIOModule](dutGen: => T, annotationSeq: AnnotationSeq)(testFn: T => Unit) {
+    val updatedAnnotations = getTestAnnotations(annotationSeq)
+    runTest(Context.createDefaultTester(() => dutGen, updatedAnnotations))(testFn)
   }
 }

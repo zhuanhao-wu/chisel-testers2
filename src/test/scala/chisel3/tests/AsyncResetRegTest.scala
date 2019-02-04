@@ -5,11 +5,12 @@ package chisel3.tests
 import chisel3._
 import chisel3.core.{ExtModule, IntParam}
 import chisel3.tester._
-import firrtl.ExecutionOptionsManager
+import firrtl.AnnotationSeq
 import firrtl.ir.{Param, Type}
 import org.scalatest._
 import treadle.executable.{PositiveEdge, Transition}
-import treadle.{HasTreadleSuite, ScalaBlackBox, ScalaBlackBoxFactory}
+import treadle.stage.{BlackBoxFactories, WriteVcd}
+import treadle.{ScalaBlackBox, ScalaBlackBoxFactory}
 
 class SingleBitRegIO extends Bundle {
   val in: UInt = Input(UInt(1.W))
@@ -112,25 +113,24 @@ class AsyncResetRegModule(resetValue: Int) extends Module {
 }
 
 class AsyncResetRegTest extends FreeSpec with ChiselScalatestTester {
-  private val manager = new ExecutionOptionsManager("asyncResetRegTest") with HasTreadleSuite {
-    treadleOptions = treadleOptions.copy(
-      blackBoxFactories = Seq(new AsyncResetBlackBoxFactory),
-      writeVCD = true,
-      setVerbose = false
-    )
-  }
+
+  val annotations = AnnotationSeq(Seq(
+    BlackBoxFactories(Seq(new AsyncResetBlackBoxFactory)),
+    WriteVcd
+  ))
+
   "register is zero, after tester startup's default reset" in {
-    test(new AsyncResetRegModule(0), manager) { dut =>
+    test(new AsyncResetRegModule(0), annotations) { dut =>
       dut.io.out.expect(0.U)
     }
   }
   "register is one, after tester startup's default reset" in {
-    test(new AsyncResetRegModule(1), manager) { dut =>
+    test(new AsyncResetRegModule(1), annotations) { dut =>
       dut.io.out.expect(1.U)
     }
   }
   "reset a register works after register has been altered" in {
-    test(new AsyncResetRegModule(1), manager) { dut =>
+    test(new AsyncResetRegModule(1), annotations) { dut =>
       // The register starts at 1 after default reset in tester startup
       dut.io.out.expect(1.U)
 
@@ -162,7 +162,7 @@ class AsyncResetRegTest extends FreeSpec with ChiselScalatestTester {
     }
   }
   "de-assert reset behaviour" in {
-    test(new AsyncResetRegModule(1), manager) { dut =>
+    test(new AsyncResetRegModule(1), annotations) { dut =>
       // register is reset at startup, and set to zero by poking
       dut.clock.step()
       dut.io.out.expect(0.U)

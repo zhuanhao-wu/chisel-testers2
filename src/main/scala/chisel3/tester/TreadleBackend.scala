@@ -2,11 +2,12 @@
 
 package chisel3.tester
 
-import chisel3._
+import chisel3.{HasChiselExecutionOptions, _}
 import chisel3.experimental.{DataMirror, MultiIOModule}
-import chisel3.HasChiselExecutionOptions
+import chisel3.stage.{ChiselCircuitAnnotation, ChiselGeneratorAnnotation, ChiselStage, NoRunFirrtlCompilerAnnotation}
+import firrtl.annotations.DeletedAnnotation
+import firrtl.stage.{FirrtlCircuitAnnotation, FirrtlSourceAnnotation, FirrtlStage}
 import firrtl.transforms.CombinationalPath
-import firrtl.{ExecutionOptionsManager, HasFirrtlOptions}
 import treadle.{HasTreadleSuite, TreadleTester}
 
 import scala.collection.mutable
@@ -182,8 +183,8 @@ class TreadleBackend[T <: MultiIOModule](dut: T,
 }
 
 object TreadleExecutive {
-  import chisel3.internal.firrtl.Circuit
   import chisel3.experimental.BaseModule
+  import chisel3.internal.firrtl.Circuit
   import firrtl._
 
   def getTopModule(circuit: Circuit): BaseModule = {
@@ -212,68 +213,50 @@ object TreadleExecutive {
     }.toMap
   }
 
-  def start[T <: MultiIOModule](
-      dutGen: () => T,
-      testOptions: TesterOptions,
-      execOptions: Option[ExecutionOptionsManager] = None): BackendInstance[T] = {
-    // Create the base options manager that has all the components we care about, and initialize defaults
-    val optionsManager = new ExecutionOptionsManager("chisel3")
-        with HasChiselExecutionOptions with HasFirrtlOptions with HasTreadleSuite
+  /**
+    * Create a Backend instance of Treadle
+    * @param dutGen         a generator of the device under tests
+    * @param annotationSeq  annotations to control the test
+    * @tparam T             The specific chisel type of the dut
+    * @return
+    */
+  def start[T <: MultiIOModule](dutGen   : () => T, annotationSeq: AnnotationSeq): BackendInstance[T] = {
 
-    // If the user specified options, override the default fields.
-    // Note: commonOptions and firrtlOptions are part of every ExecutionOptionsManager, so will always be defined
-    // whether the user intended to or not. In those cases testers2 forces an override to the testers2 defaults.
-    execOptions foreach {
-      case userOptions: HasChiselExecutionOptions => optionsManager.chiselOptions = userOptions.chiselOptions
-      case _ =>
-    }
+    var annotations = annotationSeq ++ Seq(ChiselGeneratorAnnotation(dutGen), NoRunFirrtlCompilerAnnotation)
 
-    execOptions foreach {
-      case userOptions: HasFirrtlOptions => optionsManager.firrtlOptions = userOptions.firrtlOptions
-      case _ =>
-    }
-    optionsManager.firrtlOptions = optionsManager.firrtlOptions.copy(compilerName = "low")
-
-    execOptions foreach {
-      case userOptions: HasTreadleSuite => optionsManager.treadleOptions = userOptions.treadleOptions
-      case _ =>
-    }
-
-    // Tester options take priority over exec options
-    val testName = testOptions.name.replaceAll(" ", "_").replaceAll("\\W+", "")  // sanitize filename
-    optionsManager.commonOptions = optionsManager.commonOptions.copy(
-        targetDirName = s"test_run_dir/$testName")
-    if (testOptions.writeVcd) {
-      optionsManager.treadleOptions = optionsManager.treadleOptions.copy(writeVCD = true)
-    }
-
-    // Force a cleanup: long SBT runs tend to fail with memory issues
     System.gc()
 
-    chisel3.Driver.execute(optionsManager, dutGen) match {
-      case ChiselExecutionSuccess(Some(circuit), _, Some(firrtlExecutionResult)) =>
-        firrtlExecutionResult match {
-          case success: FirrtlExecutionSuccess =>
-            val dut = getTopModule(circuit).asInstanceOf[T]
-            optionsManager.firrtlOptions = optionsManager.firrtlOptions.copy(
-              annotations = success.circuitState.annotations.toSeq.toList
-            )
-            val interpretiveTester = new TreadleTester(success.emitted, optionsManager)
+    val chiselResultAnnotations = ChiselStage.run(annotations)
 
-            val portNames = DataMirror.modulePorts(dut).flatMap { case (name, data) =>
-              getDataNames(name, data).toList
-            }.toMap
-            val paths = success.circuitState.annotations.collect {
-              case c: CombinationalPath => c
-            }
-            val pathsAsData = combinationalPathsToData(dut, paths, portNames)
+    val circuit = chiselResultAnnotations.collectFirst { case DeletedAnnotation(_, ChiselCircuitAnnotation(c)) => c }.getOrElse(
+      throw new Exception("chisel compile failed")
+    )
 
-            new TreadleBackend(dut, portNames, pathsAsData, interpretiveTester)
-          case FirrtlExecutionFailure(message) =>
-            throw new Exception(s"FirrtlBackend: failed firrtl compile message: $message")
-        }
-      case _ =>
-        throw new Exception("Problem with compilation")
+    val firrtlResultAnnotations = FirrtlStage.run(chiselResultAnnotations)
+
+    val firrtlCircuit = firrtlResultAnnotations.collectFirst { case FirrtlCircuitAnnotation(fc) => fc }.getOrElse(
+      throw new Exception("firrlt compile failed")
+    )
+
+    val dut = getTopModule(circuit).asInstanceOf[T]
+
+    val firrtlSourceAnnotation = FirrtlSourceAnnotation(firrtlCircuit.serialize)
+
+    val treadleAnnotations = firrtlResultAnnotations.filterNot(_.isInstanceOf[DeletedAnnotation]) :+
+            firrtlSourceAnnotation
+
+    val interpretiveTester = TreadleTester(treadleAnnotations)
+
+    val portNames = DataMirror.modulePorts(dut).flatMap { case (name, data) =>
+      getDataNames(name, data).toList
+    }.toMap
+
+    val paths = firrtlResultAnnotations.collect {
+      case c: CombinationalPath => c
     }
+    val pathsAsData = combinationalPathsToData(dut, paths, portNames)
+
+    new TreadleBackend(dut, portNames, pathsAsData, interpretiveTester)
+
   }
 }

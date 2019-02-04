@@ -2,9 +2,10 @@
 
 package chisel3.tester
 
-import scala.util.DynamicVariable
 import chisel3.experimental.MultiIOModule
-import firrtl.ExecutionOptionsManager
+import firrtl.AnnotationSeq
+
+import scala.util.DynamicVariable
 
 // Internal common set of options to be understood by all backends
 private[tester] case class TesterOptions(
@@ -19,7 +20,7 @@ object Context {
   private var context = new DynamicVariable[Option[Instance]](None)
 
   def run[T <: MultiIOModule](backend: BackendInstance[T], env: TestEnvInterface, testFn: T => Unit) {
-    require(context.value == None)
+    require(context.value.isEmpty)
     context.withValue(Some(new Instance(backend, env))) {
       backend.run(testFn)
     }
@@ -27,10 +28,8 @@ object Context {
 
   // TODO: better integration points for default tester selection
   // TODO: add TesterOptions (from chisel-testers) and use that to control default tester selection.
-  def createDefaultTester[T <: MultiIOModule](dutGen: () => T, testOptions: TesterOptions,
-      execOptions: Option[ExecutionOptionsManager]
-      ): BackendInstance[T] = {
-    TreadleExecutive.start(dutGen, testOptions, execOptions)
+  def createDefaultTester[T <: MultiIOModule](dutGen: () => T, annotationSeq: AnnotationSeq): BackendInstance[T] = {
+    TreadleExecutive.start(dutGen, annotationSeq)
   }
 
   def apply(): Instance = context.value.get
