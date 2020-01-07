@@ -3,6 +3,7 @@
 package chiseltest.internal
 
 import chiseltest.Region
+import chisel3.tester.Pokeable
 import chisel3._
 
 import scala.collection.mutable
@@ -43,13 +44,19 @@ trait BackendInterface {
     */
   def pokeBits(signal: Bits, value: BigInt): Unit
 
+  def pokeElement[T <: Element: Pokeable](signal: T, value: BigInt): Unit
+
   /** Returns the current value on a wire.
     * If stale is true, returns the current combinational value (after previous pokes have taken effect).
     * If stale is false, returns the value at the beginning of the current cycle.
     */
   def peekBits(signal: Bits, stale: Boolean): BigInt
 
+  def peekElement[T <: Element: Pokeable](signal: T, stale: Boolean): BigInt
+
   def expectBits(signal: Bits, value: BigInt, message: Option[String], stale: Boolean): Unit
+
+  def expectElement[T <: Element: Pokeable](signal: T, value: BigInt, message: Option[String], stale: Boolean): Unit
 
   /**
    * Sets the timeout of the clock: the number of cycles the clock can advance without

@@ -5,6 +5,8 @@ import chiseltest.internal._
 import chisel3._
 import chisel3.experimental.{DataMirror, Direction, FixedPoint, Interval}
 import chisel3.experimental.BundleLiterals._
+import chisel3.experimental.EnumType
+import chisel3.tester.Pokeable
 import chisel3.util._
 
 /** Basic interfaces and implicit conversions for testers2
@@ -18,6 +20,13 @@ package object chiseltest {
         throw new UnpokeableException("Cannot only poke inputs")
       }
       Context().backend.pokeBits(signal, value)
+    }
+
+    protected def pokeElements(signal: EnumType, value: EnumType): Unit = {
+      if (DataMirror.directionOf(signal) != Direction.Input) {
+        throw new UnpokeableException("Cannot only poke inputs")
+      }
+      Context().backend.pokeElement(signal, value.litValue())
     }
 
     def poke(value: T): Unit = (x, value) match {
@@ -42,6 +51,10 @@ package object chiseltest {
           x.poke(value)
         }
       }
+      case (x: EnumType, value: EnumType) => {
+        // a hacky way to poke enums
+        pokeElements(x, value)
+      }
       case x => throw new LiteralTypeException(s"don't know how to poke $x")
       // TODO: aggregate types
     }
@@ -65,6 +78,15 @@ package object chiseltest {
           (y: Bundle) => (y.elements(name), elt.peekWithStale(stale))
         }.toSeq
         chiselTypeOf(x).Lit(elementValueFns: _*).asInstanceOf[T]
+      }
+      case Pokeable(e) => {
+        val enumValue = Context().backend.peekElement(e, stale).U.asTypeOf(x)
+        enumValue match {
+          case en: EnumType =>
+            require(en.isValid.litValue() == 1, "the value of enum is not valid")
+            enumValue
+          case _ => throw new LiteralTypeException(s"don't know how to poke $x")
+        }
       }
       case x => throw new LiteralTypeException(s"don't know how to peek $x")
     }
@@ -91,6 +113,9 @@ package object chiseltest {
         (x.elements zip value.elements) foreach { case ((_, x), (_, value)) =>
           x.expectWithStale(value, message, stale)
         }
+      }
+      case (x: EnumType, value: EnumType) => {
+        Context().backend.expectElement(x, value.litValue, message, stale)
       }
       case x => throw new LiteralTypeException(s"don't know how to expect $x")
       // TODO: aggregate types
